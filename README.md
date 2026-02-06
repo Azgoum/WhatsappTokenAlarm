@@ -1,15 +1,12 @@
-# Claude Token Monitor 🦀
+# ClaudeUsageWindow
 
 Widget Windows always-on-top affichant ta consommation Claude.ai en temps réel, exactement comme sur https://claude.ai/settings/usage
-
-![Screenshot](screenshot.png)
 
 ## Fonctionnalités
 
 - **Affichage temps réel** : Session (5h) et usage hebdomadaire
 - **Barres de progression** colorées selon le niveau (vert → orange → rouge)
 - **Always-on-top** : toujours visible sur ton bureau
-- **Réductible** : minimise en barre compacte
 - **Notification WhatsApp** : reçois un message quand tes tokens sont dispo (via OpenClaw)
 - **Auto-refresh** : mise à jour toutes les 2 minutes
 
@@ -22,8 +19,8 @@ Widget Windows always-on-top affichant ta consommation Claude.ai en temps réel,
 ## Installation
 
 ```bash
-git clone https://github.com/ton-user/WhatsappTokenAlarm.git
-cd WhatsappTokenAlarm
+git clone https://github.com/Azgoum/ClaudeUsageWindow.git
+cd ClaudeUsageWindow
 pip install -r requirements.txt
 ```
 
@@ -59,7 +56,7 @@ self.whatsapp_number = '+33XXXXXXXXX'
 ## Fichiers
 
 ```
-WhatsappTokenAlarm/
+ClaudeUsageWindow/
 ├── token_monitor.py   # Application principale
 ├── start.bat          # Lanceur Windows
 ├── requirements.txt   # Dépendances Python
@@ -73,20 +70,6 @@ WhatsappTokenAlarm/
 Le widget utilise l'endpoint non-documenté :
 ```
 GET https://claude.ai/api/organizations/{uuid}/usage
-```
-
-Qui retourne :
-```json
-{
-  "five_hour": {
-    "utilization": 75.0,
-    "resets_at": "2026-02-06T13:00:00+00:00"
-  },
-  "seven_day": {
-    "utilization": 42.0,
-    "resets_at": "2026-02-09T08:00:00+00:00"
-  }
-}
 ```
 
 ## Dépendances
