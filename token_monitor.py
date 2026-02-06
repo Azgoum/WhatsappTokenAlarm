@@ -1,5 +1,6 @@
 """
-Claude Token Monitor - Always-on-top widget with WhatsApp notification
+Claude Token Monitor - Always-on-top widget showing real Claude.ai usage
+Fetches data from claude.ai/settings/usage via Firefox cookies
 """
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -11,6 +12,16 @@ import re
 from datetime import datetime, timedelta
 from pathlib import Path
 import time
+import urllib.request
+import urllib.error
+
+# Try to import browser_cookie3
+try:
+    import browser_cookie3
+    HAS_BROWSER_COOKIES = True
+except ImportError:
+    HAS_BROWSER_COOKIES = False
+
 
 class TokenMonitor:
     def __init__(self):
@@ -20,28 +31,35 @@ class TokenMonitor:
         self.root.overrideredirect(False)
 
         # Window settings
-        self.root.geometry("300x180+50+50")
+        self.root.geometry("320x200+50+50")
         self.root.resizable(True, True)
         self.root.configure(bg='#1a1a2e')
 
-        # State file for persistence
+        # State
         self.state_file = Path(__file__).parent / "state.json"
+        self.org_uuid = None
+        self.whatsapp_number = '+33XXXXXXXXX'
         self.load_state()
+
+        # Usage data
+        self.session_pct = 0
+        self.session_reset = None
+        self.weekly_pct = 0
+        self.weekly_reset = None
 
         # Minimize state
         self.is_minimized = False
         self.normal_geometry = None
 
-        # Timer thread
-        self.timer_thread = None
-        self.timer_running = False
+        # Notification tracking
+        self.session_notified = False
+        self.last_session_reset = None
 
         self.setup_ui()
         self.setup_drag()
-        self.update_display()
 
-        # Check if notification is pending
-        self.check_pending_notification()
+        # Initial fetch
+        self.refresh_data()
 
     def load_state(self):
         """Load saved state"""
@@ -49,30 +67,22 @@ class TokenMonitor:
             if self.state_file.exists():
                 with open(self.state_file, 'r') as f:
                     data = json.load(f)
-                    self.limit_hit_time = data.get('limit_hit_time')
-                    self.reset_time = data.get('reset_time')
+                    self.org_uuid = data.get('org_uuid')
                     self.whatsapp_number = data.get('whatsapp_number', '+33XXXXXXXXX')
-                    self.notification_sent = data.get('notification_sent', False)
-            else:
-                self.limit_hit_time = None
-                self.reset_time = None
-                self.whatsapp_number = '+33XXXXXXXXX'
-                self.notification_sent = False
+                    self.session_notified = data.get('session_notified', False)
+                    self.last_session_reset = data.get('last_session_reset')
         except Exception:
-            self.limit_hit_time = None
-            self.reset_time = None
-            self.whatsapp_number = '+33XXXXXXXXX'
-            self.notification_sent = False
+            pass
 
     def save_state(self):
         """Save state to file"""
         try:
             with open(self.state_file, 'w') as f:
                 json.dump({
-                    'limit_hit_time': self.limit_hit_time,
-                    'reset_time': self.reset_time,
+                    'org_uuid': self.org_uuid,
                     'whatsapp_number': self.whatsapp_number,
-                    'notification_sent': self.notification_sent
+                    'session_notified': self.session_notified,
+                    'last_session_reset': self.last_session_reset
                 }, f)
         except Exception as e:
             print(f"Error saving state: {e}")
@@ -80,20 +90,20 @@ class TokenMonitor:
     def setup_ui(self):
         # Main frame
         self.main_frame = tk.Frame(self.root, bg='#1a1a2e')
-        self.main_frame.pack(fill='both', expand=True, padx=5, pady=5)
+        self.main_frame.pack(fill='both', expand=True, padx=8, pady=8)
 
-        # Title bar with controls
+        # Title bar
         title_frame = tk.Frame(self.main_frame, bg='#16213e')
-        title_frame.pack(fill='x', pady=(0, 5))
+        title_frame.pack(fill='x', pady=(0, 8))
 
         title_label = tk.Label(
             title_frame,
-            text="🦀 Claude Tokens",
+            text="🦀 Claude Usage",
             bg='#16213e',
             fg='#e94560',
-            font=('Segoe UI', 10, 'bold')
+            font=('Segoe UI', 11, 'bold')
         )
-        title_label.pack(side='left', padx=5, pady=2)
+        title_label.pack(side='left', padx=8, pady=4)
 
         # Minimize button
         self.min_btn = tk.Button(
@@ -102,78 +112,123 @@ class TokenMonitor:
             command=self.toggle_minimize,
             bg='#16213e',
             fg='#ffffff',
-            font=('Segoe UI', 8),
+            font=('Segoe UI', 9),
             relief='flat',
             width=2,
             cursor='hand2'
         )
         self.min_btn.pack(side='right', padx=2, pady=2)
 
-        # Content frame (collapsible)
+        # Refresh button
+        refresh_btn = tk.Button(
+            title_frame,
+            text="↻",
+            command=self.refresh_data,
+            bg='#16213e',
+            fg='#ffffff',
+            font=('Segoe UI', 11),
+            relief='flat',
+            width=2,
+            cursor='hand2'
+        )
+        refresh_btn.pack(side='right', padx=2, pady=2)
+
+        # Content frame
         self.content_frame = tk.Frame(self.main_frame, bg='#1a1a2e')
         self.content_frame.pack(fill='both', expand=True)
 
-        # Status display
-        self.status_label = tk.Label(
-            self.content_frame,
-            text="Status: Active",
-            bg='#1a1a2e',
-            fg='#4ecca3',
-            font=('Segoe UI', 11, 'bold')
-        )
-        self.status_label.pack(pady=5)
+        # Session (5h) section
+        session_header = tk.Frame(self.content_frame, bg='#1a1a2e')
+        session_header.pack(fill='x', pady=(0, 2))
 
-        # Timer display
-        self.timer_label = tk.Label(
-            self.content_frame,
-            text="",
-            bg='#1a1a2e',
-            fg='#f4a261',
-            font=('Segoe UI', 14, 'bold')
-        )
-        self.timer_label.pack(pady=5)
-
-        # Reset time display
-        self.reset_label = tk.Label(
-            self.content_frame,
-            text="",
+        tk.Label(
+            session_header,
+            text="Session (5h)",
             bg='#1a1a2e',
             fg='#a0a0a0',
             font=('Segoe UI', 9)
-        )
-        self.reset_label.pack(pady=2)
+        ).pack(side='left')
 
-        # Buttons frame
-        btn_frame = tk.Frame(self.content_frame, bg='#1a1a2e')
-        btn_frame.pack(fill='x', pady=10)
-
-        # "Limit reached" button
-        self.limit_btn = tk.Button(
-            btn_frame,
-            text="⚠️ Limite atteinte",
-            command=self.on_limit_reached,
-            bg='#e94560',
-            fg='#ffffff',
-            font=('Segoe UI', 9, 'bold'),
-            relief='flat',
-            cursor='hand2',
-            padx=10
+        self.session_pct_label = tk.Label(
+            session_header,
+            text="---%",
+            bg='#1a1a2e',
+            fg='#4ecca3',
+            font=('Segoe UI', 10, 'bold')
         )
-        self.limit_btn.pack(side='left', padx=5)
+        self.session_pct_label.pack(side='right')
 
-        # "Clear" button
-        self.clear_btn = tk.Button(
-            btn_frame,
-            text="✓ Reset",
-            command=self.on_clear,
-            bg='#4ecca3',
-            fg='#1a1a2e',
-            font=('Segoe UI', 9, 'bold'),
-            relief='flat',
-            cursor='hand2',
-            padx=10
+        # Session progress bar
+        style = ttk.Style()
+        style.theme_use('clam')
+        style.configure("Session.Horizontal.TProgressbar", troughcolor='#16213e', background='#4ecca3', thickness=12)
+        style.configure("Weekly.Horizontal.TProgressbar", troughcolor='#16213e', background='#4ecca3', thickness=12)
+
+        self.session_progress = ttk.Progressbar(
+            self.content_frame,
+            style="Session.Horizontal.TProgressbar",
+            length=290,
+            mode='determinate'
         )
-        self.clear_btn.pack(side='right', padx=5)
+        self.session_progress.pack(fill='x', pady=(0, 2))
+
+        self.session_reset_label = tk.Label(
+            self.content_frame,
+            text="Reset: ---",
+            bg='#1a1a2e',
+            fg='#666666',
+            font=('Segoe UI', 8)
+        )
+        self.session_reset_label.pack(anchor='e', pady=(0, 8))
+
+        # Weekly section
+        weekly_header = tk.Frame(self.content_frame, bg='#1a1a2e')
+        weekly_header.pack(fill='x', pady=(0, 2))
+
+        tk.Label(
+            weekly_header,
+            text="Hebdomadaire",
+            bg='#1a1a2e',
+            fg='#a0a0a0',
+            font=('Segoe UI', 9)
+        ).pack(side='left')
+
+        self.weekly_pct_label = tk.Label(
+            weekly_header,
+            text="---%",
+            bg='#1a1a2e',
+            fg='#4ecca3',
+            font=('Segoe UI', 10, 'bold')
+        )
+        self.weekly_pct_label.pack(side='right')
+
+        # Weekly progress bar
+        self.weekly_progress = ttk.Progressbar(
+            self.content_frame,
+            style="Weekly.Horizontal.TProgressbar",
+            length=290,
+            mode='determinate'
+        )
+        self.weekly_progress.pack(fill='x', pady=(0, 2))
+
+        self.weekly_reset_label = tk.Label(
+            self.content_frame,
+            text="Reset: ---",
+            bg='#1a1a2e',
+            fg='#666666',
+            font=('Segoe UI', 8)
+        )
+        self.weekly_reset_label.pack(anchor='e', pady=(0, 8))
+
+        # Status label
+        self.status_label = tk.Label(
+            self.content_frame,
+            text="",
+            bg='#1a1a2e',
+            fg='#666666',
+            font=('Segoe UI', 8)
+        )
+        self.status_label.pack(pady=(4, 0))
 
     def setup_drag(self):
         """Enable window dragging"""
@@ -191,105 +246,208 @@ class TokenMonitor:
 
     def toggle_minimize(self):
         if self.is_minimized:
-            # Restore
             self.content_frame.pack(fill='both', expand=True)
             self.root.geometry(self.normal_geometry)
             self.min_btn.config(text="─")
             self.is_minimized = False
         else:
-            # Minimize
             self.normal_geometry = self.root.geometry()
             self.content_frame.pack_forget()
             geo = self.root.geometry()
             match = re.match(r'(\d+)x(\d+)\+(-?\d+)\+(-?\d+)', geo)
             if match:
                 x, y = match.group(3), match.group(4)
-                self.root.geometry(f"160x30+{x}+{y}")
+                self.root.geometry(f"180x35+{x}+{y}")
             self.min_btn.config(text="□")
             self.is_minimized = True
 
-    def on_limit_reached(self):
-        """User clicked 'Limit reached' button"""
-        now = datetime.now()
-        self.limit_hit_time = now.isoformat()
-        reset = now + timedelta(hours=5)
-        self.reset_time = reset.isoformat()
-        self.notification_sent = False
-        self.save_state()
+    def refresh_data(self):
+        """Fetch usage data in background"""
+        self.status_label.config(text="Chargement...", fg='#666666')
+        threading.Thread(target=self._fetch_usage, daemon=True).start()
 
-        self.status_label.config(text="⏳ En attente...", fg='#e94560')
-        self.update_display()
-        self.start_timer()
+    def _get_cookies(self):
+        """Get cookies from Firefox"""
+        if not HAS_BROWSER_COOKIES:
+            return None
+        try:
+            cj = browser_cookie3.firefox(domain_name='claude.ai')
+            return '; '.join([f'{c.name}={c.value}' for c in cj])
+        except Exception as e:
+            print(f"Cookie error: {e}")
+            return None
 
-    def on_clear(self):
-        """Clear the limit state"""
-        self.limit_hit_time = None
-        self.reset_time = None
-        self.notification_sent = False
-        self.timer_running = False
-        self.save_state()
+    def _get_org_uuid(self, cookies):
+        """Fetch organization UUID"""
+        if self.org_uuid:
+            return self.org_uuid
 
-        self.status_label.config(text="Status: Active", fg='#4ecca3')
-        self.timer_label.config(text="")
-        self.reset_label.config(text="")
+        try:
+            url = 'https://claude.ai/api/organizations'
+            req = urllib.request.Request(url)
+            req.add_header('Cookie', cookies)
+            req.add_header('Accept', 'application/json')
+            req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
 
-    def update_display(self):
-        """Update the display based on current state"""
-        if self.reset_time:
-            reset = datetime.fromisoformat(self.reset_time)
-            self.reset_label.config(text=f"Reset prévu: {reset.strftime('%H:%M')}")
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+                if data and len(data) > 0:
+                    self.org_uuid = data[0]['uuid']
+                    self.save_state()
+                    return self.org_uuid
+        except Exception as e:
+            print(f"Org fetch error: {e}")
+        return None
 
-    def start_timer(self):
-        """Start the countdown timer"""
-        if self.timer_running:
-            return
+    def _fetch_usage(self):
+        """Fetch usage from Claude.ai API"""
+        try:
+            if not HAS_BROWSER_COOKIES:
+                self._update_error("pip install browser-cookie3")
+                return
 
-        self.timer_running = True
+            cookies = self._get_cookies()
+            if not cookies:
+                self._update_error("Ouvre Firefox sur claude.ai")
+                return
 
-        def timer_loop():
-            while self.timer_running and self.reset_time:
-                try:
-                    reset = datetime.fromisoformat(self.reset_time)
-                    now = datetime.now()
-                    remaining = reset - now
+            org_uuid = self._get_org_uuid(cookies)
+            if not org_uuid:
+                self._update_error("Org non trouvée")
+                return
 
-                    if remaining.total_seconds() <= 0:
-                        # Time's up!
-                        self.root.after(0, self.on_reset_reached)
-                        break
+            # Fetch usage
+            url = f'https://claude.ai/api/organizations/{org_uuid}/usage'
+            req = urllib.request.Request(url)
+            req.add_header('Cookie', cookies)
+            req.add_header('Accept', 'application/json')
+            req.add_header('Origin', 'https://claude.ai')
+            req.add_header('Referer', 'https://claude.ai/settings/usage')
+            req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
 
-                    hours, remainder = divmod(int(remaining.total_seconds()), 3600)
-                    minutes, seconds = divmod(remainder, 60)
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+                self._process_usage(data)
 
-                    def update_timer():
-                        self.timer_label.config(text=f"{hours:02d}:{minutes:02d}:{seconds:02d}")
+        except urllib.error.HTTPError as e:
+            if e.code == 403:
+                self._update_error("Session expirée - reconnecte-toi sur claude.ai")
+            else:
+                self._update_error(f"Erreur HTTP {e.code}")
+        except Exception as e:
+            self._update_error(f"Erreur: {str(e)[:30]}")
 
-                    self.root.after(0, update_timer)
-                    time.sleep(1)
+    def _process_usage(self, data):
+        """Process usage data and update UI"""
+        five_hour = data.get('five_hour', {})
+        seven_day = data.get('seven_day', {})
 
-                except Exception as e:
-                    print(f"Timer error: {e}")
-                    break
+        self.session_pct = five_hour.get('utilization', 0) or 0
+        self.weekly_pct = seven_day.get('utilization', 0) or 0
 
-        self.timer_thread = threading.Thread(target=timer_loop, daemon=True)
-        self.timer_thread.start()
+        session_reset_str = five_hour.get('resets_at')
+        weekly_reset_str = seven_day.get('resets_at')
 
-    def on_reset_reached(self):
-        """Called when the reset time is reached"""
-        self.timer_running = False
-        self.status_label.config(text="✅ Tokens disponibles!", fg='#4ecca3')
-        self.timer_label.config(text="00:00:00")
+        # Parse reset times
+        if session_reset_str:
+            self.session_reset = datetime.fromisoformat(session_reset_str.replace('Z', '+00:00'))
+        if weekly_reset_str:
+            self.weekly_reset = datetime.fromisoformat(weekly_reset_str.replace('Z', '+00:00'))
 
-        # Send WhatsApp notification if not already sent
-        if not self.notification_sent:
-            self.send_whatsapp_notification()
-            self.notification_sent = True
+        # Check if session reset changed (new session available)
+        if session_reset_str != self.last_session_reset:
+            if self.last_session_reset is not None and self.session_pct < 10:
+                # Session was reset - send notification if we were waiting
+                self._send_notification()
+            self.last_session_reset = session_reset_str
+            self.session_notified = False
             self.save_state()
 
-    def send_whatsapp_notification(self):
+        # Schedule notification if usage is high
+        if self.session_pct >= 95 and not self.session_notified:
+            self._schedule_notification()
+
+        self._update_ui()
+
+    def _update_ui(self):
+        """Update the UI from main thread"""
+        def update():
+            # Session
+            self.session_pct_label.config(text=f"{self.session_pct:.0f}%")
+            self.session_progress['value'] = self.session_pct
+
+            if self.session_reset:
+                local_reset = self.session_reset.astimezone()
+                self.session_reset_label.config(text=f"Reset: {local_reset.strftime('%H:%M')}")
+
+            # Color coding
+            if self.session_pct >= 90:
+                self.session_pct_label.config(fg='#e94560')
+                style = ttk.Style()
+                style.configure("Session.Horizontal.TProgressbar", background='#e94560')
+            elif self.session_pct >= 70:
+                self.session_pct_label.config(fg='#f4a261')
+                style = ttk.Style()
+                style.configure("Session.Horizontal.TProgressbar", background='#f4a261')
+            else:
+                self.session_pct_label.config(fg='#4ecca3')
+                style = ttk.Style()
+                style.configure("Session.Horizontal.TProgressbar", background='#4ecca3')
+
+            # Weekly
+            self.weekly_pct_label.config(text=f"{self.weekly_pct:.0f}%")
+            self.weekly_progress['value'] = self.weekly_pct
+
+            if self.weekly_reset:
+                local_reset = self.weekly_reset.astimezone()
+                self.weekly_reset_label.config(text=f"Reset: {local_reset.strftime('%d/%m %H:%M')}")
+
+            if self.weekly_pct >= 90:
+                self.weekly_pct_label.config(fg='#e94560')
+                style = ttk.Style()
+                style.configure("Weekly.Horizontal.TProgressbar", background='#e94560')
+            elif self.weekly_pct >= 70:
+                self.weekly_pct_label.config(fg='#f4a261')
+                style = ttk.Style()
+                style.configure("Weekly.Horizontal.TProgressbar", background='#f4a261')
+            else:
+                self.weekly_pct_label.config(fg='#4ecca3')
+                style = ttk.Style()
+                style.configure("Weekly.Horizontal.TProgressbar", background='#4ecca3')
+
+            # Status
+            now = datetime.now().strftime('%H:%M:%S')
+            self.status_label.config(text=f"Mis à jour: {now}", fg='#4ecca3')
+
+        self.root.after(0, update)
+
+    def _update_error(self, msg):
+        """Update UI with error message"""
+        def update():
+            self.status_label.config(text=msg, fg='#e94560')
+        self.root.after(0, update)
+
+    def _schedule_notification(self):
+        """Schedule a WhatsApp notification for when session resets"""
+        if self.session_reset and not self.session_notified:
+            self.session_notified = True
+            self.save_state()
+
+            # Calculate delay
+            now = datetime.now(self.session_reset.tzinfo)
+            delay = (self.session_reset - now).total_seconds()
+
+            if delay > 0:
+                def notify_later():
+                    time.sleep(delay)
+                    self._send_notification()
+
+                threading.Thread(target=notify_later, daemon=True).start()
+
+    def _send_notification(self):
         """Send WhatsApp notification via OpenClaw"""
         try:
-            message = "🦀 Tes tokens Claude sont de nouveau disponibles! Tu peux reprendre ta session."
+            message = "🦀 Tes tokens Claude sont de nouveau disponibles! Session réinitialisée."
 
             cmd = [
                 'openclaw', 'message', 'send',
@@ -307,43 +465,20 @@ class TokenMonitor:
             )
 
             if result.returncode == 0:
-                print("WhatsApp notification sent successfully")
+                print("WhatsApp notification sent!")
             else:
-                print(f"WhatsApp notification failed: {result.stderr}")
-                # Show error to user
-                messagebox.showwarning(
-                    "Notification",
-                    f"Tokens disponibles!\n\nErreur WhatsApp: {result.stderr[:100]}"
-                )
+                print(f"WhatsApp error: {result.stderr}")
 
-        except FileNotFoundError:
-            messagebox.showwarning(
-                "Notification",
-                "Tokens disponibles!\n\nOpenClaw non trouvé - notification WhatsApp impossible."
-            )
         except Exception as e:
-            print(f"Error sending notification: {e}")
-            messagebox.showwarning(
-                "Notification",
-                f"Tokens disponibles!\n\nErreur: {str(e)[:100]}"
-            )
-
-    def check_pending_notification(self):
-        """Check if we need to resume a timer or send notification"""
-        if self.reset_time and not self.notification_sent:
-            reset = datetime.fromisoformat(self.reset_time)
-            now = datetime.now()
-
-            if now >= reset:
-                # Reset time passed while app was closed
-                self.on_reset_reached()
-            else:
-                # Resume timer
-                self.status_label.config(text="⏳ En attente...", fg='#e94560')
-                self.update_display()
-                self.start_timer()
+            print(f"Notification error: {e}")
 
     def run(self):
+        # Auto-refresh every 2 minutes
+        def auto_refresh():
+            self.refresh_data()
+            self.root.after(120000, auto_refresh)  # 2 minutes
+
+        self.root.after(120000, auto_refresh)
         self.root.mainloop()
 
 

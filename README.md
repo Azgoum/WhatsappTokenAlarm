@@ -1,27 +1,30 @@
-# Claude Token Alarm 🦀
+# Claude Token Monitor 🦀
 
-Widget Windows always-on-top qui surveille tes limites Claude Code et t'envoie une notification WhatsApp quand tes tokens sont de nouveau disponibles.
+Widget Windows always-on-top affichant ta consommation Claude.ai en temps réel, exactement comme sur https://claude.ai/settings/usage
+
+![Screenshot](screenshot.png)
 
 ## Fonctionnalités
 
-- **Widget always-on-top** : fenêtre compacte toujours visible sur ton bureau
-- **Bouton "Limite atteinte"** : clique quand tu vois le message de limite Claude
-- **Countdown timer** : affiche le temps restant avant la réinitialisation (5h)
-- **Notification WhatsApp** : reçois un message automatique quand tes tokens sont dispo
+- **Affichage temps réel** : Session (5h) et usage hebdomadaire
+- **Barres de progression** colorées selon le niveau (vert → orange → rouge)
+- **Always-on-top** : toujours visible sur ton bureau
 - **Réductible** : minimise en barre compacte
-- **Persistance** : l'état est sauvegardé, reprend le timer même après redémarrage
+- **Notification WhatsApp** : reçois un message quand tes tokens sont dispo (via OpenClaw)
+- **Auto-refresh** : mise à jour toutes les 2 minutes
 
 ## Prérequis
 
 - Python 3.8+
-- [OpenClaw](https://openclaw.ai) configuré avec WhatsApp
-- Tkinter (inclus avec Python sur Windows)
+- Firefox avec une session active sur claude.ai
+- [OpenClaw](https://openclaw.ai) configuré avec WhatsApp (optionnel, pour les notifications)
 
 ## Installation
 
 ```bash
 git clone https://github.com/ton-user/WhatsappTokenAlarm.git
 cd WhatsappTokenAlarm
+pip install -r requirements.txt
 ```
 
 ## Utilisation
@@ -34,17 +37,20 @@ Double-cliquer sur `start.bat` ou :
 python token_monitor.py
 ```
 
-### Workflow
+### Important
 
-1. Utilise Claude Code normalement
-2. Quand tu vois le message "limite atteinte", clique sur **⚠️ Limite atteinte**
-3. Le compteur démarre (5 heures)
-4. À la fin du countdown, tu reçois un WhatsApp : "🦀 Tes tokens Claude sont de nouveau disponibles!"
-5. Clique sur **✓ Reset** pour effacer l'état
+**Tu dois être connecté sur claude.ai dans Firefox** pour que le widget puisse récupérer les données. Le widget utilise les cookies de ta session Firefox.
+
+### Fonctionnement
+
+1. Le widget récupère les données depuis l'API claude.ai
+2. Affiche le % d'utilisation session et hebdomadaire
+3. Affiche l'heure du prochain reset
+4. Quand l'usage atteint 95%, une notification WhatsApp est programmée pour le reset
 
 ## Configuration
 
-Le numéro WhatsApp par défaut est configuré dans `token_monitor.py`. Modifie la ligne :
+Le numéro WhatsApp est configuré dans `token_monitor.py` :
 
 ```python
 self.whatsapp_number = '+33XXXXXXXXX'
@@ -56,18 +62,37 @@ self.whatsapp_number = '+33XXXXXXXXX'
 WhatsappTokenAlarm/
 ├── token_monitor.py   # Application principale
 ├── start.bat          # Lanceur Windows
+├── requirements.txt   # Dépendances Python
 ├── state.json         # État persistant (auto-généré)
 ├── .gitignore
 └── README.md
 ```
 
-## Dépendances externes
+## API Claude.ai
 
-- **OpenClaw** : pour l'envoi de messages WhatsApp
-  ```bash
-  npm install -g openclaw
-  openclaw setup
-  ```
+Le widget utilise l'endpoint non-documenté :
+```
+GET https://claude.ai/api/organizations/{uuid}/usage
+```
+
+Qui retourne :
+```json
+{
+  "five_hour": {
+    "utilization": 75.0,
+    "resets_at": "2026-02-06T13:00:00+00:00"
+  },
+  "seven_day": {
+    "utilization": 42.0,
+    "resets_at": "2026-02-09T08:00:00+00:00"
+  }
+}
+```
+
+## Dépendances
+
+- **browser-cookie3** : pour lire les cookies Firefox
+- **OpenClaw** (optionnel) : pour les notifications WhatsApp
 
 ## Licence
 
