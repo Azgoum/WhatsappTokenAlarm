@@ -1,10 +1,11 @@
 """
-Claude Token Monitor - Always-on-top widget showing real Claude.ai usage
+ClaudeUsageWindow - Always-on-top widget showing real Claude.ai usage
 Fetches data from claude.ai/settings/usage via Firefox cookies
 """
 import tkinter as tk
 from tkinter import ttk, messagebox
 import json
+import math
 import os
 import subprocess
 import threading
@@ -26,13 +27,13 @@ except ImportError:
 class TokenMonitor:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("Claude Tokens")
+        self.root.title("Claude Usage")
         self.root.attributes('-topmost', True)
         self.root.overrideredirect(False)
 
         # Window settings
         self.root.geometry("320x200+50+50")
-        self.root.resizable(True, True)
+        self.root.resizable(False, False)
         self.root.configure(bg='#1a1a2e')
 
         # State
@@ -83,28 +84,44 @@ class TokenMonitor:
         except Exception as e:
             print(f"Error saving state: {e}")
 
+    def _draw_claude_logo(self, parent, bg_color):
+        """Draw the Claude logo (sunburst) on a canvas"""
+        size = 24
+        canvas = tk.Canvas(parent, width=size, height=size, bg=bg_color, highlightthickness=0)
+        color = '#D97757'
+        cx, cy = size / 2, size / 2
+
+        # Center circle
+        r = 2.5
+        canvas.create_oval(cx - r, cy - r, cx + r, cy + r, fill=color, outline='')
+
+        # 5 petals radiating outward
+        for i in range(5):
+            angle = math.radians(i * 72 - 90)
+            x1 = cx + 3.5 * math.cos(angle)
+            y1 = cy + 3.5 * math.sin(angle)
+            x2 = cx + 10 * math.cos(angle)
+            y2 = cy + 10 * math.sin(angle)
+            canvas.create_line(x1, y1, x2, y2, fill=color, width=3.5, capstyle='round')
+
+        return canvas
+
     def setup_ui(self):
         # Main frame
         self.main_frame = tk.Frame(self.root, bg='#1a1a2e')
         self.main_frame.pack(fill='both', expand=True, padx=8, pady=8)
 
-        # Title bar
+        # Header - Claude logo only + refresh button
         title_frame = tk.Frame(self.main_frame, bg='#16213e')
         title_frame.pack(fill='x', pady=(0, 8))
 
-        title_label = tk.Label(
-            title_frame,
-            text="🦀 Claude Usage",
-            bg='#16213e',
-            fg='#e94560',
-            font=('Segoe UI', 11, 'bold')
-        )
-        title_label.pack(side='left', padx=8, pady=4)
+        logo_canvas = self._draw_claude_logo(title_frame, '#16213e')
+        logo_canvas.pack(side='left', padx=8, pady=4)
 
-        # Refresh button with animation
+        # Refresh button
         self.refresh_btn = tk.Button(
             title_frame,
-            text="↻",
+            text="\u21bb",
             command=self.refresh_with_animation,
             bg='#16213e',
             fg='#ffffff',
@@ -119,40 +136,42 @@ class TokenMonitor:
         self.content_frame = tk.Frame(self.main_frame, bg='#1a1a2e')
         self.content_frame.pack(fill='both', expand=True)
 
-        # Session (5h) section
-        session_header = tk.Frame(self.content_frame, bg='#1a1a2e')
-        session_header.pack(fill='x', pady=(0, 2))
-
-        tk.Label(
-            session_header,
-            text="Session (5h)",
-            bg='#1a1a2e',
-            fg='#a0a0a0',
-            font=('Segoe UI', 9)
-        ).pack(side='left')
-
-        self.session_pct_label = tk.Label(
-            session_header,
-            text="---%",
-            bg='#1a1a2e',
-            fg='#4ecca3',
-            font=('Segoe UI', 10, 'bold')
-        )
-        self.session_pct_label.pack(side='right')
-
-        # Session progress bar
+        # Style
         style = ttk.Style()
         style.theme_use('clam')
         style.configure("Session.Horizontal.TProgressbar", troughcolor='#16213e', background='#4ecca3', thickness=12)
         style.configure("Weekly.Horizontal.TProgressbar", troughcolor='#16213e', background='#4ecca3', thickness=12)
 
-        self.session_progress = ttk.Progressbar(
+        # --- Session (5h) section ---
+        tk.Label(
             self.content_frame,
+            text="Session (5h)",
+            bg='#1a1a2e',
+            fg='#a0a0a0',
+            font=('Segoe UI', 9)
+        ).pack(anchor='w')
+
+        # Session bar row: progress bar + percentage outside
+        session_bar_frame = tk.Frame(self.content_frame, bg='#1a1a2e')
+        session_bar_frame.pack(fill='x', pady=(2, 0))
+
+        self.session_progress = ttk.Progressbar(
+            session_bar_frame,
             style="Session.Horizontal.TProgressbar",
-            length=290,
             mode='determinate'
         )
-        self.session_progress.pack(fill='x', pady=(0, 2))
+        self.session_progress.pack(side='left', fill='x', expand=True)
+
+        self.session_pct_label = tk.Label(
+            session_bar_frame,
+            text="---%",
+            bg='#1a1a2e',
+            fg='#4ecca3',
+            font=('Segoe UI', 10, 'bold'),
+            width=5,
+            anchor='e'
+        )
+        self.session_pct_label.pack(side='right', padx=(4, 0))
 
         self.session_reset_label = tk.Label(
             self.content_frame,
@@ -163,35 +182,36 @@ class TokenMonitor:
         )
         self.session_reset_label.pack(anchor='e', pady=(0, 8))
 
-        # Weekly section
-        weekly_header = tk.Frame(self.content_frame, bg='#1a1a2e')
-        weekly_header.pack(fill='x', pady=(0, 2))
-
+        # --- Weekly section ---
         tk.Label(
-            weekly_header,
+            self.content_frame,
             text="Hebdomadaire",
             bg='#1a1a2e',
             fg='#a0a0a0',
             font=('Segoe UI', 9)
-        ).pack(side='left')
+        ).pack(anchor='w')
+
+        # Weekly bar row: progress bar + percentage outside
+        weekly_bar_frame = tk.Frame(self.content_frame, bg='#1a1a2e')
+        weekly_bar_frame.pack(fill='x', pady=(2, 0))
+
+        self.weekly_progress = ttk.Progressbar(
+            weekly_bar_frame,
+            style="Weekly.Horizontal.TProgressbar",
+            mode='determinate'
+        )
+        self.weekly_progress.pack(side='left', fill='x', expand=True)
 
         self.weekly_pct_label = tk.Label(
-            weekly_header,
+            weekly_bar_frame,
             text="---%",
             bg='#1a1a2e',
             fg='#4ecca3',
-            font=('Segoe UI', 10, 'bold')
+            font=('Segoe UI', 10, 'bold'),
+            width=5,
+            anchor='e'
         )
-        self.weekly_pct_label.pack(side='right')
-
-        # Weekly progress bar
-        self.weekly_progress = ttk.Progressbar(
-            self.content_frame,
-            style="Weekly.Horizontal.TProgressbar",
-            length=290,
-            mode='determinate'
-        )
-        self.weekly_progress.pack(fill='x', pady=(0, 2))
+        self.weekly_pct_label.pack(side='right', padx=(4, 0))
 
         self.weekly_reset_label = tk.Label(
             self.content_frame,
@@ -227,18 +247,18 @@ class TokenMonitor:
         self.root.geometry(f"+{x}+{y}")
 
     def refresh_with_animation(self):
-        """Refresh with spinning animation"""
+        """Refresh with a single circular rotation animation"""
         self.refresh_btn.config(state='disabled')
 
-        # Animation frames
-        frames = ['↻', '↺', '↻', '↺']
+        # One full clockwise rotation
+        frames = ['\u2191', '\u2197', '\u2192', '\u2198', '\u2193', '\u2199', '\u2190', '\u2196']
 
         def animate(i=0):
-            if i < 8:  # 8 frames = 2 rotations
-                self.refresh_btn.config(text=frames[i % len(frames)], fg='#4ecca3')
-                self.root.after(100, lambda: animate(i + 1))
+            if i < len(frames):
+                self.refresh_btn.config(text=frames[i], fg='#4ecca3')
+                self.root.after(80, lambda: animate(i + 1))
             else:
-                self.refresh_btn.config(text='↻', fg='#ffffff', state='normal')
+                self.refresh_btn.config(text='\u21bb', fg='#ffffff', state='normal')
 
         animate()
         self.refresh_data()
@@ -429,7 +449,7 @@ class TokenMonitor:
     def _send_notification(self):
         """Send WhatsApp notification via OpenClaw"""
         try:
-            message = "🦀 Tes tokens Claude sont de nouveau disponibles! Session réinitialisée."
+            message = "Tes tokens Claude sont de nouveau disponibles! Session réinitialisée."
 
             cmd = [
                 'openclaw', 'message', 'send',
