@@ -33,7 +33,7 @@ class TokenMonitor:
 
         # Window settings
         self.root.geometry("320x175+50+50")
-        self.root.resizable(False, False)
+        self.root.resizable(True, True)
         self.root.configure(bg='#1a1a2e')
 
         # State
@@ -480,13 +480,38 @@ class TokenMonitor:
         except Exception as e:
             print(f"Notification error: {e}")
 
+    def _update_expected_markers(self):
+        """Recalculate expected usage markers and redraw bars"""
+        now = datetime.now(timezone.utc)
+
+        if self.session_reset:
+            session_start = self.session_reset - timedelta(hours=5)
+            elapsed = (now - session_start).total_seconds()
+            self.session_expected_pct = max(0, min(100, elapsed / (5 * 3600) * 100))
+
+        if self.weekly_reset:
+            weekly_start = self.weekly_reset - timedelta(days=7)
+            elapsed = (now - weekly_start).total_seconds()
+            self.weekly_expected_pct = max(0, min(100, elapsed / (7 * 24 * 3600) * 100))
+
+        session_color = self._get_bar_color(self.session_pct)
+        self._update_bar(self.session_canvas, self.session_pct, self.session_expected_pct, session_color)
+        weekly_color = self._get_bar_color(self.weekly_pct)
+        self._update_bar(self.weekly_canvas, self.weekly_pct, self.weekly_expected_pct, weekly_color)
+
     def run(self):
         # Auto-refresh every 2 minutes
         def auto_refresh():
             self.refresh_data()
             self.root.after(120000, auto_refresh)  # 2 minutes
 
+        # Update expected-usage markers every 5 minutes
+        def update_markers():
+            self._update_expected_markers()
+            self.root.after(300000, update_markers)  # 5 minutes
+
         self.root.after(120000, auto_refresh)
+        self.root.after(300000, update_markers)
         self.root.mainloop()
 
 
