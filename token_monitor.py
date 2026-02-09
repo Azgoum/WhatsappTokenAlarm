@@ -10,7 +10,7 @@ import os
 import subprocess
 import threading
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import time
 import urllib.request
@@ -32,7 +32,7 @@ class TokenMonitor:
         self.root.overrideredirect(False)
 
         # Window settings
-        self.root.geometry("320x200+50+50")
+        self.root.geometry("320x175+50+50")
         self.root.resizable(False, False)
         self.root.configure(bg='#1a1a2e')
 
@@ -45,8 +45,10 @@ class TokenMonitor:
         # Usage data
         self.session_pct = 0
         self.session_reset = None
+        self.session_expected_pct = None
         self.weekly_pct = 0
         self.weekly_reset = None
+        self.weekly_expected_pct = None
 
         # Notification tracking
         self.session_notified = False
@@ -106,23 +108,66 @@ class TokenMonitor:
 
         return canvas
 
+    def _get_bar_color(self, pct):
+        """Get color based on usage percentage"""
+        if pct >= 90:
+            return '#e94560'
+        elif pct >= 70:
+            return '#f4a261'
+        return '#4ecca3'
+
+    def _create_progress_canvas(self, parent):
+        """Create a canvas-based progress bar with marker support"""
+        canvas = tk.Canvas(parent, height=12, bg='#16213e', highlightthickness=0)
+        canvas.pack(side='left', fill='x', expand=True)
+        canvas._bar_value = 0
+        canvas._bar_expected = None
+        canvas._bar_color = '#4ecca3'
+        canvas.bind('<Configure>', lambda e: self._redraw_bar(canvas))
+        return canvas
+
+    def _redraw_bar(self, canvas):
+        """Redraw a progress bar canvas with optional expected-usage marker"""
+        canvas.delete('all')
+        w = canvas.winfo_width()
+        h = canvas.winfo_height()
+        if w <= 1:
+            return
+
+        # Progress fill
+        fill_w = max(0, int(w * canvas._bar_value / 100))
+        if fill_w > 0:
+            canvas.create_rectangle(0, 0, fill_w, h, fill=canvas._bar_color, outline='')
+
+        # Expected usage marker (vertical line)
+        if canvas._bar_expected is not None and 0 < canvas._bar_expected < 100:
+            marker_x = int(w * canvas._bar_expected / 100)
+            canvas.create_line(marker_x, 0, marker_x, h, fill='#ffffff', width=2)
+
+    def _update_bar(self, canvas, value, expected, color):
+        """Update bar values and redraw"""
+        canvas._bar_value = value
+        canvas._bar_expected = expected
+        canvas._bar_color = color
+        self._redraw_bar(canvas)
+
     def setup_ui(self):
         # Main frame
         self.main_frame = tk.Frame(self.root, bg='#1a1a2e')
-        self.main_frame.pack(fill='both', expand=True, padx=8, pady=8)
+        self.main_frame.pack(fill='both', expand=True, padx=8, pady=6)
 
-        # Header - Claude logo only + refresh button
+        # Header - Claude logo + refresh button
         title_frame = tk.Frame(self.main_frame, bg='#16213e')
-        title_frame.pack(fill='x', pady=(0, 8))
+        title_frame.pack(fill='x', pady=(0, 4))
 
         logo_canvas = self._draw_claude_logo(title_frame, '#16213e')
-        logo_canvas.pack(side='left', padx=8, pady=4)
+        logo_canvas.pack(side='left', padx=8, pady=3)
 
         # Refresh button
         self.refresh_btn = tk.Button(
             title_frame,
             text="\u21bb",
-            command=self.refresh_with_animation,
+            command=self.refresh_with_feedback,
             bg='#16213e',
             fg='#ffffff',
             font=('Segoe UI', 11),
@@ -136,12 +181,6 @@ class TokenMonitor:
         self.content_frame = tk.Frame(self.main_frame, bg='#1a1a2e')
         self.content_frame.pack(fill='both', expand=True)
 
-        # Style
-        style = ttk.Style()
-        style.theme_use('clam')
-        style.configure("Session.Horizontal.TProgressbar", troughcolor='#16213e', background='#4ecca3', thickness=12)
-        style.configure("Weekly.Horizontal.TProgressbar", troughcolor='#16213e', background='#4ecca3', thickness=12)
-
         # --- Session (5h) section ---
         tk.Label(
             self.content_frame,
@@ -151,16 +190,10 @@ class TokenMonitor:
             font=('Segoe UI', 9)
         ).pack(anchor='w')
 
-        # Session bar row: progress bar + percentage outside
         session_bar_frame = tk.Frame(self.content_frame, bg='#1a1a2e')
         session_bar_frame.pack(fill='x', pady=(2, 0))
 
-        self.session_progress = ttk.Progressbar(
-            session_bar_frame,
-            style="Session.Horizontal.TProgressbar",
-            mode='determinate'
-        )
-        self.session_progress.pack(side='left', fill='x', expand=True)
+        self.session_canvas = self._create_progress_canvas(session_bar_frame)
 
         self.session_pct_label = tk.Label(
             session_bar_frame,
@@ -180,7 +213,7 @@ class TokenMonitor:
             fg='#666666',
             font=('Segoe UI', 8)
         )
-        self.session_reset_label.pack(anchor='e', pady=(0, 8))
+        self.session_reset_label.pack(anchor='e', pady=(0, 4))
 
         # --- Weekly section ---
         tk.Label(
@@ -191,16 +224,10 @@ class TokenMonitor:
             font=('Segoe UI', 9)
         ).pack(anchor='w')
 
-        # Weekly bar row: progress bar + percentage outside
         weekly_bar_frame = tk.Frame(self.content_frame, bg='#1a1a2e')
         weekly_bar_frame.pack(fill='x', pady=(2, 0))
 
-        self.weekly_progress = ttk.Progressbar(
-            weekly_bar_frame,
-            style="Weekly.Horizontal.TProgressbar",
-            mode='determinate'
-        )
-        self.weekly_progress.pack(side='left', fill='x', expand=True)
+        self.weekly_canvas = self._create_progress_canvas(weekly_bar_frame)
 
         self.weekly_pct_label = tk.Label(
             weekly_bar_frame,
@@ -220,7 +247,7 @@ class TokenMonitor:
             fg='#666666',
             font=('Segoe UI', 8)
         )
-        self.weekly_reset_label.pack(anchor='e', pady=(0, 8))
+        self.weekly_reset_label.pack(anchor='e')
 
         # Status label
         self.status_label = tk.Label(
@@ -230,7 +257,7 @@ class TokenMonitor:
             fg='#666666',
             font=('Segoe UI', 8)
         )
-        self.status_label.pack(pady=(4, 0))
+        self.status_label.pack(pady=(2, 0))
 
     def setup_drag(self):
         """Enable window dragging"""
@@ -246,22 +273,11 @@ class TokenMonitor:
         y = self.root.winfo_y() + event.y - self.drag_y
         self.root.geometry(f"+{x}+{y}")
 
-    def refresh_with_animation(self):
-        """Refresh with a single circular rotation animation"""
-        self.refresh_btn.config(state='disabled')
-
-        # One full clockwise rotation
-        frames = ['\u2191', '\u2197', '\u2192', '\u2198', '\u2193', '\u2199', '\u2190', '\u2196']
-
-        def animate(i=0):
-            if i < len(frames):
-                self.refresh_btn.config(text=frames[i], fg='#4ecca3')
-                self.root.after(80, lambda: animate(i + 1))
-            else:
-                self.refresh_btn.config(text='\u21bb', fg='#ffffff', state='normal')
-
-        animate()
+    def refresh_with_feedback(self):
+        """Refresh with simple visual feedback"""
+        self.refresh_btn.config(state='disabled', fg='#4ecca3')
         self.refresh_data()
+        self.root.after(800, lambda: self.refresh_btn.config(state='normal', fg='#ffffff'))
 
     def refresh_data(self):
         """Fetch usage data in background"""
@@ -356,6 +372,21 @@ class TokenMonitor:
         if weekly_reset_str:
             self.weekly_reset = datetime.fromisoformat(weekly_reset_str.replace('Z', '+00:00'))
 
+        # Calculate expected usage percentages
+        now = datetime.now(timezone.utc)
+
+        if self.session_reset:
+            session_start = self.session_reset - timedelta(hours=5)
+            elapsed = (now - session_start).total_seconds()
+            total = 5 * 3600
+            self.session_expected_pct = max(0, min(100, elapsed / total * 100))
+
+        if self.weekly_reset:
+            weekly_start = self.weekly_reset - timedelta(days=7)
+            elapsed = (now - weekly_start).total_seconds()
+            total = 7 * 24 * 3600
+            self.weekly_expected_pct = max(0, min(100, elapsed / total * 100))
+
         # Check if session reset changed (new session available)
         if session_reset_str != self.last_session_reset:
             if self.last_session_reset is not None and self.session_pct < 10:
@@ -375,47 +406,22 @@ class TokenMonitor:
         """Update the UI from main thread"""
         def update():
             # Session
-            self.session_pct_label.config(text=f"{self.session_pct:.0f}%")
-            self.session_progress['value'] = self.session_pct
+            session_color = self._get_bar_color(self.session_pct)
+            self.session_pct_label.config(text=f"{self.session_pct:.0f}%", fg=session_color)
+            self._update_bar(self.session_canvas, self.session_pct, self.session_expected_pct, session_color)
 
             if self.session_reset:
                 local_reset = self.session_reset.astimezone()
                 self.session_reset_label.config(text=f"Reset: {local_reset.strftime('%H:%M')}")
 
-            # Color coding
-            if self.session_pct >= 90:
-                self.session_pct_label.config(fg='#e94560')
-                style = ttk.Style()
-                style.configure("Session.Horizontal.TProgressbar", background='#e94560')
-            elif self.session_pct >= 70:
-                self.session_pct_label.config(fg='#f4a261')
-                style = ttk.Style()
-                style.configure("Session.Horizontal.TProgressbar", background='#f4a261')
-            else:
-                self.session_pct_label.config(fg='#4ecca3')
-                style = ttk.Style()
-                style.configure("Session.Horizontal.TProgressbar", background='#4ecca3')
-
             # Weekly
-            self.weekly_pct_label.config(text=f"{self.weekly_pct:.0f}%")
-            self.weekly_progress['value'] = self.weekly_pct
+            weekly_color = self._get_bar_color(self.weekly_pct)
+            self.weekly_pct_label.config(text=f"{self.weekly_pct:.0f}%", fg=weekly_color)
+            self._update_bar(self.weekly_canvas, self.weekly_pct, self.weekly_expected_pct, weekly_color)
 
             if self.weekly_reset:
                 local_reset = self.weekly_reset.astimezone()
                 self.weekly_reset_label.config(text=f"Reset: {local_reset.strftime('%d/%m %H:%M')}")
-
-            if self.weekly_pct >= 90:
-                self.weekly_pct_label.config(fg='#e94560')
-                style = ttk.Style()
-                style.configure("Weekly.Horizontal.TProgressbar", background='#e94560')
-            elif self.weekly_pct >= 70:
-                self.weekly_pct_label.config(fg='#f4a261')
-                style = ttk.Style()
-                style.configure("Weekly.Horizontal.TProgressbar", background='#f4a261')
-            else:
-                self.weekly_pct_label.config(fg='#4ecca3')
-                style = ttk.Style()
-                style.configure("Weekly.Horizontal.TProgressbar", background='#4ecca3')
 
             # Status
             now = datetime.now().strftime('%H:%M:%S')
