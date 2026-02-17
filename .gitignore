@@ -1,6 +1,5 @@
-# State and config files (contain personal data)
+# State file (contains personal data)
 state.json
-config.json
 
 # Python
 __pycache__/

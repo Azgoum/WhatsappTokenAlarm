@@ -5,13 +5,9 @@ Fetches data from claude.ai/settings/usage via Firefox cookies
 import tkinter as tk
 from tkinter import ttk, messagebox
 import json
-import os
-import subprocess
 import threading
-import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-import time
 import urllib.request
 import urllib.error
 
@@ -42,9 +38,7 @@ class TokenMonitor:
 
         # State
         self.state_file = Path(__file__).parent / "state.json"
-        self.config_file = Path(__file__).parent / "config.json"
         self.org_uuid = None
-        self.whatsapp_number = self._load_whatsapp_number()
         self.load_state()
 
         # Usage data
@@ -55,34 +49,11 @@ class TokenMonitor:
         self.weekly_reset = None
         self.weekly_expected_pct = None
 
-        # Notification tracking
-        self.session_notified = False
-        self.last_session_reset = None
-
         self.setup_ui()
         self.setup_drag()
 
         # Initial fetch
         self.refresh_data()
-
-    def _load_whatsapp_number(self):
-        """Load WhatsApp number from config.json or environment variable"""
-        # 1. Environment variable
-        env_number = os.environ.get('WHATSAPP_NUMBER')
-        if env_number:
-            return env_number
-        # 2. config.json
-        try:
-            if self.config_file.exists():
-                with open(self.config_file, 'r') as f:
-                    config = json.load(f)
-                    number = config.get('whatsapp_number')
-                    if number:
-                        return number
-        except Exception:
-            pass
-        # 3. Placeholder (notifications will not work)
-        return '+33XXXXXXXXX'
 
     def load_state(self):
         """Load saved state"""
@@ -91,10 +62,6 @@ class TokenMonitor:
                 with open(self.state_file, 'r') as f:
                     data = json.load(f)
                     self.org_uuid = data.get('org_uuid')
-                    if data.get('whatsapp_number'):
-                        self.whatsapp_number = data.get('whatsapp_number')
-                    self.session_notified = data.get('session_notified', False)
-                    self.last_session_reset = data.get('last_session_reset')
         except Exception:
             pass
 
@@ -103,10 +70,7 @@ class TokenMonitor:
         try:
             with open(self.state_file, 'w') as f:
                 json.dump({
-                    'org_uuid': self.org_uuid,
-                    'whatsapp_number': self.whatsapp_number,
-                    'session_notified': self.session_notified,
-                    'last_session_reset': self.last_session_reset
+                    'org_uuid': self.org_uuid
                 }, f)
         except Exception as e:
             print(f"Error saving state: {e}")
@@ -356,19 +320,6 @@ class TokenMonitor:
             total = 7 * 24 * 3600
             self.weekly_expected_pct = max(0, min(100, elapsed / total * 100))
 
-        # Check if session reset changed (new session available)
-        if session_reset_str != self.last_session_reset:
-            if self.last_session_reset is not None and self.session_pct < 10:
-                # Session was reset - send notification if we were waiting
-                self._send_notification()
-            self.last_session_reset = session_reset_str
-            self.session_notified = False
-            self.save_state()
-
-        # Schedule notification if usage is high
-        if self.session_pct >= 95 and not self.session_notified:
-            self._schedule_notification()
-
         self._update_ui()
 
     def _update_ui(self):
@@ -403,51 +354,6 @@ class TokenMonitor:
         def update():
             self.status_label.config(text=msg, fg='#e94560')
         self.root.after(0, update)
-
-    def _schedule_notification(self):
-        """Schedule a WhatsApp notification for when session resets"""
-        if self.session_reset and not self.session_notified:
-            self.session_notified = True
-            self.save_state()
-
-            # Calculate delay
-            now = datetime.now(self.session_reset.tzinfo)
-            delay = (self.session_reset - now).total_seconds()
-
-            if delay > 0:
-                def notify_later():
-                    time.sleep(delay)
-                    self._send_notification()
-
-                threading.Thread(target=notify_later, daemon=True).start()
-
-    def _send_notification(self):
-        """Send WhatsApp notification via OpenClaw"""
-        try:
-            message = "Tes tokens Claude sont de nouveau disponibles! Session réinitialisée."
-
-            cmd = [
-                'openclaw', 'message', 'send',
-                '--channel', 'whatsapp',
-                '--target', self.whatsapp_number,
-                '--message', message
-            ]
-
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=30,
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-            )
-
-            if result.returncode == 0:
-                print("WhatsApp notification sent!")
-            else:
-                print(f"WhatsApp error: {result.stderr}")
-
-        except Exception as e:
-            print(f"Notification error: {e}")
 
     def _update_expected_markers(self):
         """Recalculate expected usage markers and redraw bars"""
